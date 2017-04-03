@@ -1,13 +1,14 @@
-# MACS 30200 Project
+# MACS 30200
 
-##ProblemSets
-PS1
-PS2
-PS3
-##Paper
-###Proposal
-###LitReview
-###Theory
-###MethodsResults
-###Poster
-###FinalPaper
+## Problem Sets
+* PS1
+* PS2
+* PS3
+
+## Paper
+* Proposal
+* Literature Review
+* Theory
+* Methods ／ Results
+* Poster
+* Final Paper
