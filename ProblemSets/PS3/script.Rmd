@@ -1,0 +1,434 @@
+---
+title: "Problem set #3: Regression diagnostics, interaction terms, and missing data"
+author: "Yiqing Zhu"
+output:
+  github_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(forcats)
+library(broom)
+library(modelr)
+library(stringr)
+library(ISLR)
+library(titanic)
+library(rcfss)
+library(haven)
+library(car)
+library(lmtest)
+library(plotly)
+library(coefplot)
+library(RColorBrewer)
+library(Amelia)
+library(GGally)
+library(MVN)
+
+options(digits = 3)
+set.seed(1234)
+theme_set(theme_minimal())
+options(na.action = na.warn)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+# Regression diagnostics
+
+**Estimate the following linear regression model of attitudes towards Joseph Biden: $Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$ where Y is the Joe Biden feeling thermometer, $X_1$ is age, $X_2$ is gender, and $X_3$ is education. Report the parameters and standard errors.**
+
+```{r}
+data <- read_csv("biden.csv") %>%
+    mutate_each(funs(as.factor(.)), female) %>%
+    na.omit
+attach(data)
+```
+
+The model is estimated as below:
+```{r}
+lm1 = lm(biden ~ age + female + educ)
+summary(lm1)
+```
+
+The estimate of parameter $\beta_0$ is 68.6210 with standard error 3.5960, $\beta_1$ 0.0419 with standard error 0.0325, $\beta_2$ 6.1961 with standard error 1.0967, $\beta_3$ -0.8887 with standard error 0.2247.
+
+
+**1. Test the model to identify any unusual and/or influential observations. Identify how you would treat these observations moving forward with this research. Note you do not actually have to estimate a new model, just explain what you would do. This could include things like dropping observations, respecifying the model, or collecting additional variables to control for this influential effect.**
+
+The following bubble plot identifies unusual obervations as pink triangles, unusual and influential observations as maroon squares.
+
+```{r}
+# add key statistics
+lm1_augment <- data %>%
+  mutate(hat = hatvalues(lm1),
+         student = rstudent(lm1),
+         cooksd = cooks.distance(lm1)) %>%
+  mutate(leverage = ifelse(hat > 2 * mean(hat), 1, 0),
+         discrepancy = ifelse(abs(student) > 2, 1, 0),
+         influence = ifelse(cooksd > 4 / (nrow(.) - (length(coef(lm1)) - 1) - 1), 1, 0))
+
+# find unusual observations
+unusual_obs <- lm1_augment %>%
+  filter(leverage == 1 | discrepancy == 1 | influence == 1)
+
+# find influentual observations
+influ_obs <- lm1_augment %>%
+  filter(influence == 1)
+  
+# draw bubble plot
+ggplot(lm1_augment, aes(hat, student, size = cooksd)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_point(shape = 1, color = 'grey') +
+  geom_point(data = unusual_obs, shape = 2, color = 'pink') +
+  geom_point(data = influ_obs, shape = 5, color = 'maroon') +
+  scale_size_continuous(range = c(1, 20)) +
+  labs(x = "Leverage",
+       y = "Studentized residual") +
+  theme(legend.position = "none")
+```
+
+To deal with these unusual or/and influential observations, we try to find out the reasons for their unusualness.
+
+```{r}
+lm1_augment <- lm1_augment %>%
+  mutate(`data status` = ifelse(leverage == 1 | discrepancy == 1 | influence == 1, "Unusual observations", "Usual observations"))
+```
+
+```{r}
+ggplot(lm1_augment, aes(biden, fill = `data status`)) +
+  geom_histogram(bins=15) +
+  labs(title = "Joe Biden feeling thermometer information",
+       x = "Feeling thermometer",
+       y = "Count") + 
+  theme(legend.title=element_blank())
+```
+
+The above plot indicates that many unusual observations report Joe Biden feeling thermometer as 0, which should be considered as a reason for their statistical unusualness, however, it is pratically reasonable and is not the evidence for dropping them.
+
+```{r}
+ggplot(lm1_augment, aes(age, fill = `data status`)) +
+  geom_histogram(bins = 10) +
+  labs(title = "Age information",
+       x = "Age",
+       y = "Count") + 
+  theme(legend.title=element_blank())
+```
+
+The above plot shows that people at a larger age is more represented in the unusual observations, and no obvious mistakes of age information can be observed.
+
+```{r}
+ggplot(lm1_augment %>% mutate(female = ifelse(female == 1, "Female", "Male")), aes(female, fill = `data status`)) +
+  geom_bar() +
+  labs(title = "Gender information",
+       x = "Gender",
+       y = "Count") + 
+  theme(legend.title=element_blank())
+```
+
+The above plot shows that the male is more represented in the unusual observations.
+
+```{r}
+ggplot(lm1_augment, aes(educ, fill = `data status`)) +
+  geom_histogram(bins=10) +
+  labs(title = "Education information",
+       x = "Education",
+       y = "Count") + 
+  theme(legend.title=element_blank())
+```
+
+The above plot shows that people with low education level are more represented in unusual observations.
+
+```{r}
+ggplot(lm1_augment %>% mutate(party = ifelse(dem == 1, "Democrat", ifelse(rep == 1, "Republican", "Independent"))), aes(party, fill = `data status`)) +
+    geom_histogram(stat = "count", bins = 10) + 
+    labs(title = "Party information",
+         x = "Party",
+         y = "Count") +
+  theme(legend.title=element_blank())
+```
+
+The above plot shows that Republicans are more represented in the unusual observations.
+
+Overall, we can conclude that there are no obvious mistakes can be found among the unusual observations, and people with low Joe Biden feeling thermometer, larger age, male, low education level, and Republican are more represented in the unusual observations. Therefore, to treat the unusual observations, I would include party affiliation, interaction terms among age, gender, education level, and party affilication in the model, also, if possible, I can collect more data to make it more representative.
+
+
+**2. Test for non-normally distributed errors. If they are not normally distributed, propose how to correct for them.**
+
+```{r}
+car::qqPlot(lm1)
+```
+
+The above quantile-comparison plot shows that many observations fall outside the 95% C.I., which indicates that the normal distribution assumption has been violated. To solve this problem, power and log transformations are typically used.
+
+To specify the exact tranformation needed, we use the boxcox method to evaluate the model $Y + 1 = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$ (The Y+1 transformation results from the fact that there is 0 Joe Biden feeling thermometer in the dataset).
+
+```{r}
+lm2 = lm(biden+1 ~ age + female + educ)
+boxCox(lm2)
+```
+
+The above boxcox plot shows that \lambda = 1.2 is in the 95% C.I., therefore, we choose power transformation of Y. The new model is estimated and evaluated as below.
+
+```{r}
+lm3 = lm(biden^1.2 ~ age + female + educ)
+summary(lm3)
+car::qqPlot(lm3)
+```
+
+We can observe that the residuals are closer to normal distribution than before.
+
+
+**3. Test for heteroscedasticity in the model. If present, explain what impact this could have on inference.**
+
+```{r}
+data %>%
+  add_predictions(lm1) %>%
+  add_residuals(lm1) %>%
+  ggplot(aes(pred, resid)) +
+  geom_point(alpha = .2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_quantile(method = "rqss", lambda = 5, quantiles = c(.05, .95)) +
+  labs(title = "Homoscedastic variance of error terms",
+       x = "Predicted values",
+       y = "Residuals")
+```
+
+```{r}
+bptest(lm1)
+```
+
+Both graphical test and statistical test shows that there is heteroscedasticity present in the model. This could result in biased standard errors and therefore, leads to biase in test-statistics and confidence intervals.
+
+
+**4. Test for multicollinearity. If present, propose if/how to solve the problem.**
+
+We can calculate variance inflation factor to evaluate the multicollinearity.
+
+```{r}
+vif(lm1)
+```
+
+Therefore, there is no multicollinearity present in the model and there is no problem to be solved.
+
+
+# Interaction terms
+
+**Estimate the following linear regression model: $Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_1X_2$ where Y is the Joe Biden feeling thermometer, $X_1$ is age, and $X_2$ is education. Report the parameters and standard errors.**
+
+The model is estimated as below:
+
+```{r}
+lm4 = lm(biden ~ age*educ)
+summary(lm4)
+```
+
+The estimate of parameter $\beta_0$ is 38.3735 with standard error 9.5636, $\beta_1$ 0.6719 with standard error 0.1705, $\beta_2$ 1.6574 with standard error 0.7140, $\beta_3$ -0.0480 with standard error 0.0129.
+
+**1. Evaluate the marginal effect of age on Joe Biden thermometer rating, conditional on education. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.**
+
+The marginal effect of age on Joe Biden thermometer rating conditional on education is estimated as below. The magnitude and direction of the marginal effect can be observed in the plot.
+
+```{r}
+# function to get point estimates and standard errors
+# model - lm object
+# mod_var - name of moderating variable in the interaction
+instant_effect <- function(model, mod_var){
+  # get interaction term name
+  int.name <- names(model$coefficients)[[which(str_detect(names(model$coefficients), ":"))]]
+  
+  marg_var <- str_split(int.name, ":")[[1]][[which(str_split(int.name, ":")[[1]] != mod_var)]]
+  
+  # store coefficients and covariance matrix
+  beta.hat <- coef(model)
+  cov <- vcov(model)
+  
+  # possible set of values for mod_var
+  if(class(model)[[1]] == "lm"){
+    z <- seq(min(model$model[[mod_var]]), max(model$model[[mod_var]]))
+  } else {
+    z <- seq(min(model$data[[mod_var]]), max(model$data[[mod_var]]))
+  }
+  
+  # calculate instantaneous effect
+  dy.dx <- beta.hat[[marg_var]] + beta.hat[[int.name]] * z
+  
+  # calculate standard errors for instantaeous effect
+  se.dy.dx <- sqrt(cov[marg_var, marg_var] +
+                     z^2 * cov[int.name, int.name] +
+                     2 * z * cov[marg_var, int.name])
+  
+  # combine into data frame
+  data_frame(z = z,
+             dy.dx = dy.dx,
+             se = se.dy.dx)
+}
+
+# point range plot
+instant_effect(lm4, "educ") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(title = "Marginal effect of age",
+       subtitle = "By respondent education",
+       x = "Education",
+       y = "Estimated marginal effect")
+```
+
+We can conduct hypothesis testing to evaluate its statistical significance.
+
+```{r}
+linearHypothesis(lm4, "age + age:educ")
+```
+
+The above testing results show that the marginal effect of age on Joe Biden thermometer rating, conditional on education, is statistically significant.
+
+**2. Evaluate the marginal effect of education on Joe Biden thermometer rating, conditional on age. Consider the magnitude and direction of the marginal effect, as well as its statistical significance.**
+
+The marginal effect of education on Joe Biden thermometer rating conditional on age is estimated as below. The magnitude and direction of the marginal effect can be observed in the plot.
+
+```{r}
+# function to get point estimates and standard errors
+# model - lm object
+# mod_var - name of moderating variable in the interaction
+instant_effect <- function(model, mod_var){
+  # get interaction term name
+  int.name <- names(model$coefficients)[[which(str_detect(names(model$coefficients), ":"))]]
+  
+  marg_var <- str_split(int.name, ":")[[1]][[which(str_split(int.name, ":")[[1]] != mod_var)]]
+  
+  # store coefficients and covariance matrix
+  beta.hat <- coef(model)
+  cov <- vcov(model)
+  
+  # possible set of values for mod_var
+  if(class(model)[[1]] == "lm"){
+    z <- seq(min(model$model[[mod_var]]), max(model$model[[mod_var]]))
+  } else {
+    z <- seq(min(model$data[[mod_var]]), max(model$data[[mod_var]]))
+  }
+  
+  # calculate instantaneous effect
+  dy.dx <- beta.hat[[marg_var]] + beta.hat[[int.name]] * z
+  
+  # calculate standard errors for instantaeous effect
+  se.dy.dx <- sqrt(cov[marg_var, marg_var] +
+                     z^2 * cov[int.name, int.name] +
+                     2 * z * cov[marg_var, int.name])
+  
+  # combine into data frame
+  data_frame(z = z,
+             dy.dx = dy.dx,
+             se = se.dy.dx)
+}
+
+# point range plot
+instant_effect(lm4, "age") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(title = "Marginal effect of education",
+       subtitle = "By respondent age",
+       x = "Age",
+       y = "Estimated marginal effect")
+```
+
+We can conduct hypothesis testing to evaluate its statistical significance.
+
+```{r}
+linearHypothesis(lm4, "educ + age:educ")
+```
+
+The above testing results show that the marginal effect of education on Joe Biden thermometer rating, conditional on age, is statistically significant.
+
+
+# Missing data
+
+**Estimate the following linear regression model of attitudes towards Joseph Biden: $Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3$ where Y is the Joe Biden feeling thermometer, $X_1$ is age, $X_2$ is gender, and $X_3$ is education. This time, use multiple imputation to account for the missingness in the data. Consider the multivariate normality assumption and transform any variables as you see fit for the imputation stage. Calculate appropriate estimates of the parameters and the standard errors and explain how the results differ from the original, non-imputed model.**
+
+The model is estimated as below.
+
+```{r}
+data1 <- read_csv("biden.csv") %>%
+    mutate_each(funs(as.factor(.)), female)
+attach(data1)
+lm5 = lm(biden ~ age + female + educ)
+summary(lm5)
+```
+
+The missingness for each variable is:
+
+```{r}
+data1 %>%
+  select(biden, age, female, educ) %>%
+  summarize_all(funs(sum(is.na(.)))) %>%
+  knitr::kable()
+```
+
+We can conduct a Mardia's MVN test to evaluate the multivariate normality assumption of the dataset.
+
+```{r}
+data1_lite <- data1 %>%
+  select(age, educ)
+mardiaTest(data1_lite, qqplot = FALSE)
+uniPlot(data1_lite, type = "qqplot")
+```
+
+The data is not multivariate normal, and according to the plots above, we may consider power transformation of `educ`.
+
+```{r}
+data1_trans <- data1_lite %>%
+  mutate(power_educ = educ^2)
+mardiaTest(data1_trans %>% select(power_educ, age), qqplot = FALSE)
+uniPlot(data1_trans, type = "qqplot")
+```
+
+The test results and above plots indicate that though the tranformed data is still not multivariate normal, it is better than before. Thus, we power transform `educ` and use multiple imputation to account for the missingness in the data.
+
+```{r}
+biden_transform = data1 %>%
+  mutate(age = age,
+         power_educ = educ^2)
+biden.out <- amelia(as.data.frame(biden_transform), m = 5, 
+                    idvars = c("female", "dem", "rep", "educ", "age"))
+models_trans_imp <- data_frame(data = biden.out$imputations) %>%
+  mutate(model = map(data, ~ lm(biden ~ age + power_educ + female,
+                                data = .x)),
+         coef = map(model, tidy)) %>%
+  unnest(coef, .id = "id")
+
+models_trans_imp
+
+```
+
+The estimates of the parameters and the standard errors of both imputed and non-imputed model are listed below.
+
+```{r}
+mi.meld.plus <- function(df_tidy){
+  # transform data into appropriate matrix shape
+  coef.out <- df_tidy %>%
+    select(id:estimate) %>%
+    spread(term, estimate) %>%
+    select(-id)
+  
+  se.out <- df_tidy %>%
+    select(id, term, std.error) %>%
+    spread(term, std.error) %>%
+    select(-id)
+  
+  combined.results <- mi.meld(q = coef.out, se = se.out)
+  
+  data_frame(term = colnames(combined.results$q.mi),
+             estimate.mi = combined.results$q.mi[1, ],
+             std.error.mi = combined.results$se.mi[1, ])
+}
+
+biden_imputed = mi.meld.plus(models_trans_imp)
+tidy(lm5) %>%
+  select(term, estimate, std.error)%>%
+  cbind(biden_imputed)
+```
+
+The above table indicates that the imputed model is slightly better than the non-imputed one, but there are not much difference, which may result from the fact that there are not many missing values in this dataset and the violation of multivariate normality assumption has not been well remedied.
