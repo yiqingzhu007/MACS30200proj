@@ -8,7 +8,6 @@
 ## Paper
 * Proposal
 * Literature Review
-* Theory
 * Methods ／ Results
 * Poster
 * Final Paper
